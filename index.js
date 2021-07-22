@@ -2,10 +2,13 @@
 const fs = require('fs');
 const path = require('path');
 const axios = require('axios');
+const glob = require("glob");
+const tinify = require("tinify");
 
 class TinypngPlugin {
     constructor(options = {}) {
         this.options = {
+            useAPI: false,
             extentions: ['png', 'jpg', 'jpeg'],
             silent: false,
             cache: true,
@@ -28,9 +31,22 @@ class TinypngPlugin {
                 return;
             }
             if (!this.options.disable) {
-                const files = await this.getFilesFromDirectory();
+                // const files = await this.getFilesFromDirectory();
+                const files2 = await this.getFilesRecursively(this.options.from);
+                // this.log('list file retrieved');
+                // this.log(files);
+                this.log('list file retrieved (recursively)');
+                this.log(files2);
+                this.log('start compressing');
                 this.getCache();
-                await Promise.all(files.map(file => this.compressSingleFile(file)));
+
+                if (!this.options.useAPI) {
+                    await Promise.all(files2.map(file => this.compressSingleFile(file)));
+                } else if (typeof this.options.useAPI === 'string') {
+
+                } else {
+                    this.log('useAPI should be false logic or string of type.')
+                }
                 this.setCache();
                 this.log('finished!!');
             }
@@ -38,7 +54,8 @@ class TinypngPlugin {
         };
 
         if (compiler.hooks) {
-            compiler.hooks.emit.tapAsync('onEmit', onEmit);
+            // changed hooks emit to afterEmit
+            compiler.hooks.afterEmit.tapAsync('onEmit', onEmit);
         } else {
             compiler.plugin('emit', onEmit);
         }
@@ -70,6 +87,41 @@ class TinypngPlugin {
         if (this.options.cache && this.dict.length > 0 && this.shouldRewriteDict) {
             fs.writeFileSync(this.options.cacheLocation, JSON.stringify(this.dict));
         }
+    }
+
+
+    async compressSingleFileWithAPI(filePath, api) {
+        tinify.key = api;
+
+        try {
+            if (this.tester.test(filePath)) {
+                const { size } = fs.statSync(filePath);
+                const filePathRelative = filePath.split(this.options.projectRoot)[1];
+                if (!this.dict.find(el => el.filePath === filePathRelative && el.size === size)) {
+                    this.shouldRewriteDict = true;
+                    const { input, output } = await this.upload(filePath);
+                    const compressedFile = await this.download(output.url);
+                    this.log(
+                        `${filePathRelative}: original size <${input.size}B>, compressed size <${
+                            output.size
+                        }B>, compress ratio <${(output.ratio * 100).toFixed(2)}%>`,
+                    );
+                    fs.writeFileSync(filePath, compressedFile);
+                    // set cache
+                    this.dict.push({
+                        filePath: filePathRelative,
+                        size: output.size,
+                    });
+                }
+            }
+        } catch (e) {
+            this.log(e);
+        }
+
+        const source = tinify.fromFile("unoptimized.jpg");
+        source.toFile("optimized.jpg");
+
+        tinify.fromFile("unoptimized.png").toFile("optimized.png");
     }
 
     async compressSingleFile(filePath) {
@@ -163,5 +215,26 @@ class TinypngPlugin {
         });
         return filteredFiles;
     }
+
+    async getFilesRecursively(src) {
+        var filteredFiles = [];
+        await new Promise(resolve => {
+            const getDirectories = function (src, callback) {
+                glob(src + '/**/*', callback);
+            };
+            getDirectories(src, function (err, res) {
+                if (err) {
+                    console.log('Error', err);
+                } else {
+                    // console.log(res);
+                    // filteredFiles.push(res);
+                    filteredFiles = res;
+                    resolve();
+                }
+            });
+        });
+        return filteredFiles;
+    }
+
 }
 module.exports = TinypngPlugin;
